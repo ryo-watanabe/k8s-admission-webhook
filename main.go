@@ -16,12 +16,12 @@ import (
 type SubjectAccessReview struct {
 	ApiVersion string       `json:"apiVersion"`
 	Kind       string       `json:"kind"`
-	Spec       SubjectSpec  `json:"spec,omitempty"`
-	Status     AccessStatus `json:"status,omitempty"`
+	Spec       *SubjectSpec  `json:"spec,omitempty"`
+	Status     *AccessStatus `json:"status,omitempty"`
 }
 
 type SubjectSpec struct {
-	ResourceAttributes SubjectAttributes `json:"resourceAttributes"`
+	ResourceAttributes *SubjectAttributes `json:"resourceAttributes"`
 	User               string            `json:"user"`
 	Group              []string          `json:"group"`
 }
@@ -57,7 +57,7 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 	ret := SubjectAccessReview{
 		ApiVersion: "authorization.k8s.io/v1beta1",
 		Kind: "SubjectAccessReview",
-		Status: AccessStatus{Allowed: true}
+		Status: &AccessStatus{Allowed: true},
 	}
 	request := ""
 
@@ -100,14 +100,16 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// do filterings
-	if req.SubjectSpec.SubjectAttributes == nil { return }
-	if !matchList(req.SubjectSpec.SubjectAttributes.Group, apigroups) {
+	if req.Spec.ResourceAttributes == nil {
 		return
 	}
-	if !matchList(req.SubjectSpec.SubjectAttributes.Resource, resources) {
+	if !matchList(req.Spec.ResourceAttributes.Group, apigroups) {
 		return
 	}
-	if !matchList(req.SubjectSpec.SubjectAttributes.Verb, verbs) {
+	if !matchList(req.Spec.ResourceAttributes.Resource, resources) {
+		return
+	}
+	if !matchList(req.Spec.ResourceAttributes.Verb, verbs) {
 		return
 	}
 	ret.Status.Allowed = false
@@ -116,7 +118,7 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	resource, apigroups, verbs []string
+	resources, apigroups, verbs []string
 )
 
 func main() {
