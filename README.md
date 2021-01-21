@@ -1,3 +1,3 @@
-# k8s-subject-access-gate
+# k8s-admission-webhook
 
-Deny a paticular k8s subject for kube-apiserver's Webhook mode
+Deny paticular operations on a k8s resource for kube-apiserver's Addmission Webhook plugin.
