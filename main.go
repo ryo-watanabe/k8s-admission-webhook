@@ -7,37 +7,12 @@ import (
 	"net/http"
 	"os"
 	"strings"
-
-	//"strconv"
 	"bufio"
 	"io"
+
+	"k8s.io/api/admission/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-type SubjectAccessReview struct {
-	ApiVersion string       `json:"apiVersion"`
-	Kind       string       `json:"kind"`
-	Spec       *SubjectSpec  `json:"spec,omitempty"`
-	Status     *AccessStatus `json:"status,omitempty"`
-}
-
-type SubjectSpec struct {
-	ResourceAttributes *SubjectAttributes `json:"resourceAttributes"`
-	User               string            `json:"user"`
-	Group              []string          `json:"group"`
-}
-
-type SubjectAttributes struct {
-	Namespace string `json:"namespace"`
-	Verb      string `json:"verb"`
-	Group     string `json:"group"`
-	Resource  string `json:"resource"`
-}
-
-type AccessStatus struct {
-	Allowed bool   `json:"allowed"`
-	Denied  bool   `json:"denied,omitempty"`
-	Reason  string `json:"reason,omitempty"`
-}
 
 func matchList(item string, list []string) bool {
 	if item == "" {
@@ -54,12 +29,8 @@ func matchList(item string, list []string) bool {
 
 func apiRequest(w http.ResponseWriter, r *http.Request) {
 
-	ret := SubjectAccessReview{
-		ApiVersion: "authorization.k8s.io/v1beta1",
-		Kind: "SubjectAccessReview",
-		Status: &AccessStatus{Allowed: true},
-	}
-	request := ""
+	ret := v1beta1.AdmissionReview{}
+	ret.Response.Allowed = true
 
 	// JSON return
 	defer func() {
@@ -74,8 +45,11 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 
 	// type check
 	if r.Method != "POST" {
-		ret.Status.Allowed = false
-		ret.Status.Reason = "Webhook: Not POST method"
+		ret.Response.Allowed = false
+		ret.Response.Result = &metav1.Status{
+			Code: "500",
+			Reason: "Webhook: Not POST method",
+		}
 		return
 	}
 
@@ -90,54 +64,73 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// JSON parse
-	var req SubjectAccessReview
+	req := v1beta1.AdmissionReview{}
 	b := []byte(request)
 	err := json.Unmarshal(b, &req)
 	if err != nil {
-		ret.Status.Allowed = false
-		ret.Status.Reason = "Webhook: JSON parse error."
+		ret.Response.Allowed = false
+		ret.Response.Result = &metav1.Status{
+			Code: "500",
+			Reason: "Webhook: JSON parse error",
+		}
 		return
 	}
+	ret.Response.UID = req.Request.UID
 
 	// do filterings
-	if req.Spec.ResourceAttributes == nil {
+	if req.Request.Resource == nil {
 		return
 	}
-	if !matchList(req.Spec.ResourceAttributes.Group, apigroups) {
+	if debug {
+		fmt.Printf(
+			"Addmission webhook checking : %s/%s/%s\n",
+			req.Request.Resource.Group,
+			req.Request.Resource.Resource,
+			req.Request.Resource.Operation,
+		)
+	}
+	if !matchList(req.Request.Resource.Group, apigroups) {
 		return
 	}
-	if !matchList(req.Spec.ResourceAttributes.Resource, resources) {
+	if !matchList(req.Request.Resource.Resource, resources) {
 		return
 	}
-	if !matchList(req.Spec.ResourceAttributes.Verb, verbs) {
+	if !matchList(req.Request.Operation, operations) {
 		return
 	}
-	ret.Status.Allowed = false
-	ret.Status.Reason = "Webhook: denied"
+	ret.Response.Allowed = false
+	ret.Response.Result = &metav1.Status{
+		Code: "403",
+		Reason: "Webhook: denied",
+	}
 	return
 }
 
 var (
-	resources, apigroups, verbs []string
+	resources, apigroups, operations []string
+	debug bool
 )
 
 func main() {
-	var resourcesFlag, apigroupsFlag, verbsFlag, port string
+	var resourcesFlag, apigroupsFlag, operationsFlag, port, certFile, keyFile string
 	flag.StringVar(&resourcesFlag, "resources", "", "Commma separated resource names to be denied")
 	flag.StringVar(&apigroupsFlag, "apigroups", "", "Commma separated api group names to be denied")
-	flag.StringVar(&verbsFlag, "verbs", "", "Commma separated verbs to be denied")
-	flag.StringVar(&port, "port", "3000", "Listen port number")
+	flag.StringVar(&operationsFlag, "operations", "", "Commma separated operations to be denied")
+	flag.StringVar(&certFile, "tls-cert-file", "", "file path for TLS certificate")
+	flag.StringVar(&keyFile, "tls-key-file", "", "file path for key of TLS certificate")
+	flag.StringVar(&port, "port", "9443", "Listen port number")
+	flag.BoolVar(&debug, "debug", false, "Print requested group/resource/operation")
 	flag.Parse()
 
 	resources = strings.Split(resourcesFlag, ",")
 	apigroups = strings.Split(apigroupsFlag, ",")
-	verbs = strings.Split(verbsFlag, ",")
+	operations = strings.Split(operationsFlag, ",")
 
 	// route handler
 	http.HandleFunc("/", apiRequest)
 
 	// do serve
-	err := http.ListenAndServe(":" + port, nil)
+	err := http.ListenAndServeTLS(":" + port, certFile, keyFile, nil)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
