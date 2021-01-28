@@ -12,12 +12,10 @@ import (
 
 	"k8s.io/api/admission/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog"
 )
 
 func matchList(item string, list []string) bool {
-	if item == "" {
-		return false
-	}
 	matched := false
 	for _, i := range(list) {
 		if i == item || i == "*" {
@@ -27,17 +25,29 @@ func matchList(item string, list []string) bool {
 	return matched
 }
 
+func setErrorResponse(r *v1beta1.AdmissionResponse, code int32, reason string) {
+	r.Allowed = false
+	r.Result = &metav1.Status{
+		Code: code,
+		Reason: metav1.StatusReason(reason),
+	}
+}
+
 func apiRequest(w http.ResponseWriter, r *http.Request) {
 
-	ret := v1beta1.AdmissionReview{}
+	ret := v1beta1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "AdmissionReview",
+			APIVersion: "admission.k8s.io/v1beta1",
+		}}
+	ret.Response = &v1beta1.AdmissionResponse{}
 	ret.Response.Allowed = true
 
 	// JSON return
 	defer func() {
-		// result
 		outjson, err := json.Marshal(ret)
 		if err != nil {
-			fmt.Println(err) //TODO: change to log
+			klog.Errorf("%s", err.Error())
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, string(outjson))
@@ -45,16 +55,13 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 
 	// type check
 	if r.Method != "POST" {
-		ret.Response.Allowed = false
-		ret.Response.Result = &metav1.Status{
-			Code: "500",
-			Reason: "Webhook: Not POST method",
-		}
+		setErrorResponse(ret.Response, 500, "Webhook: Not POST method")
 		return
 	}
 
 	// request body
 	rb := bufio.NewReader(r.Body)
+	request := ""
 	for {
 		s, err := rb.ReadString('\n')
 		request = request + s
@@ -68,41 +75,30 @@ func apiRequest(w http.ResponseWriter, r *http.Request) {
 	b := []byte(request)
 	err := json.Unmarshal(b, &req)
 	if err != nil {
-		ret.Response.Allowed = false
-		ret.Response.Result = &metav1.Status{
-			Code: "500",
-			Reason: "Webhook: JSON parse error",
-		}
+		setErrorResponse(ret.Response, 500, "Webhook: JSON parse error")
 		return
 	}
 	ret.Response.UID = req.Request.UID
-
-	// do filterings
-	if req.Request.Resource == nil {
-		return
-	}
 	if debug {
-		fmt.Printf(
+		klog.Infof(
 			"Addmission webhook checking : %s/%s/%s\n",
 			req.Request.Resource.Group,
 			req.Request.Resource.Resource,
-			req.Request.Resource.Operation,
+			req.Request.Operation,
 		)
 	}
+
+	// do filterings
 	if !matchList(req.Request.Resource.Group, apigroups) {
 		return
 	}
 	if !matchList(req.Request.Resource.Resource, resources) {
 		return
 	}
-	if !matchList(req.Request.Operation, operations) {
+	if !matchList(string(req.Request.Operation), operations) {
 		return
 	}
-	ret.Response.Allowed = false
-	ret.Response.Result = &metav1.Status{
-		Code: "403",
-		Reason: "Webhook: denied",
-	}
+	setErrorResponse(ret.Response, 403, "Webhook: denied")
 	return
 }
 
@@ -112,7 +108,9 @@ var (
 )
 
 func main() {
-	var resourcesFlag, apigroupsFlag, operationsFlag, port, certFile, keyFile string
+	// flags
+	var kubeconfig, resourcesFlag, apigroupsFlag, operationsFlag, port, certFile, keyFile string
+	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&resourcesFlag, "resources", "", "Commma separated resource names to be denied")
 	flag.StringVar(&apigroupsFlag, "apigroups", "", "Commma separated api group names to be denied")
 	flag.StringVar(&operationsFlag, "operations", "", "Commma separated operations to be denied")
@@ -132,7 +130,7 @@ func main() {
 	// do serve
 	err := http.ListenAndServeTLS(":" + port, certFile, keyFile, nil)
 	if err != nil {
-		fmt.Println(err)
+		klog.Errorf("%s", err.Error())
 		os.Exit(1)
 	}
 }
