@@ -124,6 +124,14 @@ func main() {
 	apigroups = strings.Split(apigroupsFlag, ",")
 	operations = strings.Split(operationsFlag, ",")
 
+	// Config
+	if kubeconfig != "" {
+		go func() {
+			config := newWebhookConfig(kubeconfig)
+			config.Wait()
+		}()
+	}
+
 	// route handler
 	http.HandleFunc("/", apiRequest)
 
